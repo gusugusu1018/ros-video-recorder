@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="video_width" default="640" />
+    <arg name="video_height" default="480" />
+    <arg name="video_codec" default="avc1" /> <!--avc1 or h264, mp42-->
+    <arg name="video_path" default="$(find video_recorder)/log/[timestamp].mp4" />
+    <node name="video_recorder" pkg="video_recorder" type="recorder.py" output="screen" required="true">
+        <param name="output_width" type="int" value="$(arg video_width)" />
+        <param name="output_height" type="int" value="$(arg video_height)" />
+        <param name="output_format" value="$(arg video_codec)" />
+        <param name="output_path" value="$(arg video_path)" />
+	<param name="source1" value="/image_raw,0,0,$(arg video_width),$(arg video_height)" />
+    </node>
+</launch>

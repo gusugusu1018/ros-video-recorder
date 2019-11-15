@@ -6,10 +6,11 @@ import datetime
 import time
 
 import rospy
+import sys
 
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge, CvBridgeError
-
+from std_srvs.srv import Empty
 
 def opencv_version():
     v = cv2.__version__.split('.')[0]
@@ -49,32 +50,27 @@ class VideoFrames:
 
 
 class VideoRecorder:
-    def __init__(self, output_width, output_height, output_fps, output_format, output_path):
+    def __init__(self, output_width, output_height, output_fps, output_format, output_path, initial_start):
         self.frame_wrappers = []
         self.start_time = -1
         self.end_time = -1
         self.pub_img = None
         self.bridge = CvBridge()
-
         self.fps = output_fps
         self.interval = 1.0 / self.fps
         self.output_width = output_width
         self.output_height = output_height
+        self.record_flag = initial_start
 
         if opencv_version() == 2:
-            fourcc = cv2.cv.FOURCC(*output_format)
+            self.fourcc = cv2.cv.FOURCC(*output_format)
         elif opencv_version() == 3:
-            fourcc = cv2.VideoWriter_fourcc(*output_format)
+            self.fourcc = cv2.VideoWriter_fourcc(*output_format)
         else:
             raise
 
         self.output_path = output_path
         
-        if self.output_path:
-            self.video_writer = cv2.VideoWriter(output_path, fourcc, output_fps, (output_width, output_height))
-        else:
-            self.video_writer = None
-
     def add_subscription(self, subscription):
         self.frame_wrappers.append(subscription)
 
@@ -84,10 +80,34 @@ class VideoRecorder:
         else:
             self.pub_img = rospy.Publisher(publish_topic, Image, queue_size=1)
 
+    def set_service(self):
+        rospy.Service('~stop', Empty, self.stop_srv_cb)
+        rospy.Service('~start', Empty, self.start_srv_cb)
+
+    def record_spin(self):
+        r = rospy.Rate(1)
+        try:
+            while not rospy.is_shutdown() and not self.record_flag:
+                r.sleep()
+                rospy.loginfo("[ros-video-recorder] Record waiting.")
+        except KeyboardInterrupt:
+            sys.exit()
+
+        if self.output_path:
+            self.output_file = self.output_path.replace('[timestamp]', datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+            self.video_writer = cv2.VideoWriter(self.output_file, self.fourcc, self.fps, (self.output_width, self.output_height))
+            rospy.loginfo("[ros-video-recorder] Record Started. file={}".format(self.output_file))
+        else:
+            self.video_writer = None
+
+        self.start_record()
+        self.record_spin()
+
     def start_record(self):
         self.start_time = time.time()
         curr_time = self.start_time
-        while self.end_time < 0 or curr_time <= self.end_time:
+        self.end_time = -1
+        while (self.end_time < 0 or curr_time <= self.end_time) and self.record_flag:
             try:
                 canvas = np.zeros((self.output_height, self.output_width, 3), np.uint8)
 
@@ -124,13 +144,31 @@ class VideoRecorder:
         if self.video_writer:
             self.video_writer.release()
 
+
+    def start_srv_cb(self, req):
+        if self.record_flag:
+            rospy.loginfo("[ros-video-recorder] Record already Started.")
+        else:
+            self.record_flag = True
+        return []
+
+    def stop_srv_cb(self, req):
+        if self.record_flag:
+            rospy.loginfo("[ros-video-recorder] Record Stopped.")
+            self.terminate()
+        else:
+            rospy.loginfo("[ros-video-recorder] Record already Stopped.")
+        return []
+
     def terminate(self):
-        rospy.loginfo("[ros-video-recorder] Video Saved. path={}".format(self.output_path))
+        rospy.loginfo("[ros-video-recorder] Video Saved. file={}".format(self.output_file))
+        #rospy.loginfo("[ros-video-recorder] Video Saved.")
         self.end_time = time.time()
+        self.record_flag = False
 
 
 if __name__ == '__main__':
-    rospy.init_node('video_recorder', anonymous=True)
+    rospy.init_node('video_recorder', anonymous=True,disable_signals = True)
 
     # parameters
     output_width = int(rospy.get_param('~output_width', '640'))
@@ -139,10 +177,10 @@ if __name__ == '__main__':
     output_format = rospy.get_param('~output_format', 'xvid')
     output_topic = rospy.get_param('~output_topic', '')
     output_path = rospy.get_param('~output_path', '')
-    output_path = output_path.replace('[timestamp]', datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
+    initial_start = rospy.get_param('~initial_start', False)
     num_videos = int(rospy.get_param('~num_videos', '1000'))
 
-    ft = VideoRecorder(output_width, output_height, output_fps, output_format, output_path)
+    ft = VideoRecorder(output_width, output_height, output_fps, output_format, output_path, initial_start)
 
     # get parameters for videos and initialize subscriptions
     for idx in range(num_videos):
@@ -163,10 +201,12 @@ if __name__ == '__main__':
     if output_topic:
         ft.set_broadcast(output_topic)
 
-    # recording.
+    ft.set_service()
+
     try:
-        ft.start_record()
+        ft.record_spin()
     except KeyboardInterrupt:
         rospy.logerr("[ros-video-recorder] Shutting down+")
 
     ft.terminate()
+
